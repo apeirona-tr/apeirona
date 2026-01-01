@@ -1,56 +1,61 @@
 import { NextRequest, NextResponse } from 'next/server';
-import dbConnect from '@/lib/db';
-import Product from '@/models/Product';
+import prisma from '@/lib/prisma';
 
-export async function GET(req: NextRequest) {
+export async function GET(request: NextRequest) {
   try {
-    await dbConnect();
-
-    const { searchParams } = new URL(req.url);
+    const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get('page') || '1');
     const limit = parseInt(searchParams.get('limit') || '12');
     const category = searchParams.get('category');
     const search = searchParams.get('search');
+    const featured = searchParams.get('featured');
     const sort = searchParams.get('sort') || 'createdAt';
     const order = searchParams.get('order') || 'desc';
-    const featured = searchParams.get('featured');
-    const minPrice = searchParams.get('minPrice');
-    const maxPrice = searchParams.get('maxPrice');
 
-    // Build query
-    const query: any = { isActive: true };
+    const skip = (page - 1) * limit;
+
+    // Build where clause
+    const where: any = {
+      isActive: true,
+    };
 
     if (category) {
-      query.category = category;
+      where.category = {
+        slug: category,
+      };
     }
 
     if (search) {
-      query.$text = { $search: search };
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { description: { contains: search, mode: 'insensitive' } },
+      ];
     }
 
     if (featured === 'true') {
-      query.isFeatured = true;
+      where.isFeatured = true;
     }
 
-    if (minPrice || maxPrice) {
-      query.price = {};
-      if (minPrice) query.price.$gte = parseFloat(minPrice);
-      if (maxPrice) query.price.$lte = parseFloat(maxPrice);
-    }
-
-    // Build sort
-    const sortObj: any = {};
-    sortObj[sort] = order === 'asc' ? 1 : -1;
-
-    // Execute query
-    const skip = (page - 1) * limit;
+    // Get products
     const [products, total] = await Promise.all([
-      Product.find(query)
-        .populate('category', 'name slug')
-        .sort(sortObj)
-        .skip(skip)
-        .limit(limit),
-      Product.countDocuments(query),
+      prisma.product.findMany({
+        where,
+        include: {
+          category: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+            },
+          },
+        },
+        orderBy: {
+          [sort]: order,
+        },
+        skip,
+        take: limit,
+      }),
+      prisma.product.count({ where }),
     ]);
 
     return NextResponse.json({
@@ -60,43 +65,52 @@ export async function GET(req: NextRequest) {
         page,
         limit,
         total,
-        totalPages: Math.ceil(total / limit),
+        pages: Math.ceil(total / limit),
       },
     });
-  } catch (error: any) {
-    console.error('Get products error:', error);
+  } catch (error) {
+    console.error('Products fetch error:', error);
     return NextResponse.json(
-      { success: false, error: 'Ürünler yüklenirken bir hata oluştu' },
+      { success: false, message: 'Ürünler yüklenirken bir hata oluştu' },
       { status: 500 }
     );
   }
 }
 
-export async function POST(req: NextRequest) {
+export async function POST(request: NextRequest) {
   try {
-    await dbConnect();
+    const body = await request.json();
 
-    // TODO: Add admin auth check
+    const product = await prisma.product.create({
+      data: {
+        name: body.name,
+        slug: body.slug || body.name.toLowerCase().replace(/\s+/g, '-'),
+        description: body.description,
+        price: body.price,
+        salePrice: body.salePrice,
+        sku: body.sku,
+        stock: body.stock || 0,
+        images: body.images || [],
+        categoryId: body.categoryId,
+        tags: body.tags || [],
+        isFeatured: body.isFeatured || false,
+        isActive: body.isActive ?? true,
+      },
+      include: {
+        category: true,
+      },
+    });
 
-    const body = await req.json();
-
-    // Generate SKU if not provided
-    if (!body.sku) {
-      body.sku = `APR-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
-    }
-
-    const product = await Product.create(body);
-
+    return NextResponse.json({
+      success: true,
+      data: product,
+      message: 'Ürün başarıyla oluşturuldu',
+    });
+  } catch (error) {
+    console.error('Product create error:', error);
     return NextResponse.json(
-      { success: true, data: product, message: 'Ürün oluşturuldu' },
-      { status: 201 }
-    );
-  } catch (error: any) {
-    console.error('Create product error:', error);
-    return NextResponse.json(
-      { success: false, error: error.message || 'Ürün oluşturulurken bir hata oluştu' },
+      { success: false, message: 'Ürün oluşturulurken bir hata oluştu' },
       { status: 500 }
     );
   }
 }
-

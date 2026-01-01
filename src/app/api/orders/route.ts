@@ -1,63 +1,61 @@
 import { NextRequest, NextResponse } from 'next/server';
-import dbConnect from '@/lib/db';
-import Order from '@/models/Order';
-import jwt from 'jsonwebtoken';
+import prisma from '@/lib/prisma';
 
-// Get user from token
-async function getUserFromToken(req: NextRequest) {
-  const token = req.cookies.get('token')?.value;
-  if (!token) return null;
-
-  try {
-    const decoded = jwt.verify(token, process.env.NEXTAUTH_SECRET!) as {
-      userId: string;
-      email: string;
-      role: string;
-    };
-    return decoded;
-  } catch {
-    return null;
-  }
+// Generate unique order number
+function generateOrderNumber(): string {
+  const timestamp = Date.now().toString(36).toUpperCase();
+  const random = Math.random().toString(36).substring(2, 6).toUpperCase();
+  return `APR-${timestamp}-${random}`;
 }
 
-export async function GET(req: NextRequest) {
+export async function GET(request: NextRequest) {
   try {
-    const user = await getUserFromToken(req);
-    if (!user) {
-      return NextResponse.json(
-        { success: false, error: 'Yetkilendirme gerekli' },
-        { status: 401 }
-      );
-    }
-
-    await dbConnect();
-
-    const { searchParams } = new URL(req.url);
+    const { searchParams } = new URL(request.url);
     const page = parseInt(searchParams.get('page') || '1');
-    const limit = parseInt(searchParams.get('limit') || '10');
-
-    // Build query based on role
-    const query: any = {};
-    if (user.role !== 'admin') {
-      query.user = user.userId;
-    }
-
-    // Optional filters for admin
-    if (user.role === 'admin') {
-      const status = searchParams.get('status');
-      const paymentStatus = searchParams.get('paymentStatus');
-      if (status) query.orderStatus = status;
-      if (paymentStatus) query.paymentStatus = paymentStatus;
-    }
+    const limit = parseInt(searchParams.get('limit') || '20');
+    const status = searchParams.get('status');
+    const userId = searchParams.get('userId');
 
     const skip = (page - 1) * limit;
+
+    const where: any = {};
+
+    if (status) {
+      where.status = status;
+    }
+
+    if (userId) {
+      where.userId = userId;
+    }
+
     const [orders, total] = await Promise.all([
-      Order.find(query)
-        .populate('user', 'name surname email')
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit),
-      Order.countDocuments(query),
+      prisma.order.findMany({
+        where,
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+          items: {
+            include: {
+              product: {
+                select: {
+                  id: true,
+                  name: true,
+                  images: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.order.count({ where }),
     ]);
 
     return NextResponse.json({
@@ -67,63 +65,90 @@ export async function GET(req: NextRequest) {
         page,
         limit,
         total,
-        totalPages: Math.ceil(total / limit),
+        pages: Math.ceil(total / limit),
       },
     });
-  } catch (error: any) {
-    console.error('Get orders error:', error);
+  } catch (error) {
+    console.error('Orders fetch error:', error);
     return NextResponse.json(
-      { success: false, error: 'Siparişler yüklenirken bir hata oluştu' },
+      { success: false, message: 'Siparişler yüklenirken bir hata oluştu' },
       { status: 500 }
     );
   }
 }
 
-export async function POST(req: NextRequest) {
+export async function POST(request: NextRequest) {
   try {
-    const user = await getUserFromToken(req);
-    if (!user) {
-      return NextResponse.json(
-        { success: false, error: 'Yetkilendirme gerekli' },
-        { status: 401 }
-      );
-    }
+    const body = await request.json();
 
-    await dbConnect();
-
-    const body = await req.json();
-
-    // Validate required fields
-    if (!body.items || body.items.length === 0) {
-      return NextResponse.json(
-        { success: false, error: 'Sepetiniz boş' },
-        { status: 400 }
-      );
-    }
-
-    if (!body.shippingAddress || !body.billingAddress) {
-      return NextResponse.json(
-        { success: false, error: 'Adres bilgileri gerekli' },
-        { status: 400 }
-      );
-    }
-
-    // Create order
-    const order = await Order.create({
-      ...body,
-      user: user.userId,
+    const order = await prisma.order.create({
+      data: {
+        orderNumber: generateOrderNumber(),
+        userId: body.userId,
+        addressId: body.addressId,
+        guestEmail: body.guestEmail,
+        guestName: body.guestName,
+        guestPhone: body.guestPhone,
+        shippingAddress: body.shippingAddress,
+        subtotal: body.subtotal,
+        shippingCost: body.shippingCost || 0,
+        discount: body.discount || 0,
+        total: body.total,
+        paymentMethod: body.paymentMethod,
+        notes: body.notes,
+        items: {
+          create: body.items.map((item: any) => ({
+            productId: item.productId,
+            name: item.name,
+            price: item.price,
+            quantity: item.quantity,
+            isCustom: item.isCustom || false,
+            customData: item.customData,
+          })),
+        },
+      },
+      include: {
+        items: true,
+      },
     });
 
+    return NextResponse.json({
+      success: true,
+      data: order,
+      message: 'Sipariş başarıyla oluşturuldu',
+    });
+  } catch (error) {
+    console.error('Order create error:', error);
     return NextResponse.json(
-      { success: true, data: order, message: 'Sipariş oluşturuldu' },
-      { status: 201 }
-    );
-  } catch (error: any) {
-    console.error('Create order error:', error);
-    return NextResponse.json(
-      { success: false, error: error.message || 'Sipariş oluşturulurken bir hata oluştu' },
+      { success: false, message: 'Sipariş oluşturulurken bir hata oluştu' },
       { status: 500 }
     );
   }
 }
 
+export async function PUT(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { id, ...data } = body;
+
+    const order = await prisma.order.update({
+      where: { id },
+      data,
+      include: {
+        items: true,
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: order,
+      message: 'Sipariş güncellendi',
+    });
+  } catch (error) {
+    console.error('Order update error:', error);
+    return NextResponse.json(
+      { success: false, message: 'Sipariş güncellenirken bir hata oluştu' },
+      { status: 500 }
+    );
+  }
+}

@@ -1,70 +1,132 @@
 import { NextRequest, NextResponse } from 'next/server';
-import dbConnect from '@/lib/db';
-import PlannerOption from '@/models/PlannerOption';
+import prisma from '@/lib/prisma';
+import { PlannerOptionType } from '@prisma/client';
 
-export async function GET(req: NextRequest) {
+export async function GET(request: NextRequest) {
   try {
-    await dbConnect();
+    const { searchParams } = new URL(request.url);
+    const type = searchParams.get('type') as PlannerOptionType | null;
+    const parentId = searchParams.get('parentId');
 
-    const { searchParams } = new URL(req.url);
-    const type = searchParams.get('type');
+    const where: any = {
+      isActive: true,
+    };
 
-    const query: any = { isActive: true };
     if (type) {
-      query.type = type;
+      where.type = type;
     }
 
-    const options = await PlannerOption.find(query).sort({ order: 1 });
-
-    // Group by type if no specific type requested
-    if (!type) {
-      const grouped = options.reduce((acc: any, option) => {
-        if (!acc[option.type]) {
-          acc[option.type] = [];
-        }
-        acc[option.type].push(option);
-        return acc;
-      }, {});
-
-      return NextResponse.json({
-        success: true,
-        data: grouped,
-      });
+    if (parentId) {
+      where.parentId = parentId;
+    } else if (!type) {
+      // If no type specified and no parentId, get top-level options
+      where.parentId = null;
     }
+
+    const options = await prisma.plannerOption.findMany({
+      where,
+      include: {
+        children: {
+          where: { isActive: true },
+          orderBy: { order: 'asc' },
+        },
+      },
+      orderBy: { order: 'asc' },
+    });
 
     return NextResponse.json({
       success: true,
       data: options,
     });
-  } catch (error: any) {
-    console.error('Get planner options error:', error);
+  } catch (error) {
+    console.error('Planner options fetch error:', error);
     return NextResponse.json(
-      { success: false, error: 'Seçenekler yüklenirken bir hata oluştu' },
+      { success: false, message: 'Seçenekler yüklenirken bir hata oluştu' },
       { status: 500 }
     );
   }
 }
 
-export async function POST(req: NextRequest) {
+export async function POST(request: NextRequest) {
   try {
-    await dbConnect();
+    const body = await request.json();
 
-    // TODO: Add admin auth check
+    const option = await prisma.plannerOption.create({
+      data: {
+        type: body.type as PlannerOptionType,
+        name: body.name,
+        description: body.description,
+        image: body.image,
+        price: body.price || 0,
+        parentId: body.parentId,
+        order: body.order || 0,
+        isActive: body.isActive ?? true,
+      },
+    });
 
-    const body = await req.json();
-
-    const option = await PlannerOption.create(body);
-
+    return NextResponse.json({
+      success: true,
+      data: option,
+      message: 'Seçenek başarıyla oluşturuldu',
+    });
+  } catch (error) {
+    console.error('Planner option create error:', error);
     return NextResponse.json(
-      { success: true, data: option, message: 'Seçenek oluşturuldu' },
-      { status: 201 }
-    );
-  } catch (error: any) {
-    console.error('Create planner option error:', error);
-    return NextResponse.json(
-      { success: false, error: error.message || 'Seçenek oluşturulurken bir hata oluştu' },
+      { success: false, message: 'Seçenek oluşturulurken bir hata oluştu' },
       { status: 500 }
     );
   }
 }
 
+export async function PUT(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { id, ...data } = body;
+
+    const option = await prisma.plannerOption.update({
+      where: { id },
+      data,
+    });
+
+    return NextResponse.json({
+      success: true,
+      data: option,
+      message: 'Seçenek başarıyla güncellendi',
+    });
+  } catch (error) {
+    console.error('Planner option update error:', error);
+    return NextResponse.json(
+      { success: false, message: 'Seçenek güncellenirken bir hata oluştu' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const id = searchParams.get('id');
+
+    if (!id) {
+      return NextResponse.json(
+        { success: false, message: 'ID gerekli' },
+        { status: 400 }
+      );
+    }
+
+    await prisma.plannerOption.delete({
+      where: { id },
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: 'Seçenek başarıyla silindi',
+    });
+  } catch (error) {
+    console.error('Planner option delete error:', error);
+    return NextResponse.json(
+      { success: false, message: 'Seçenek silinirken bir hata oluştu' },
+      { status: 500 }
+    );
+  }
+}

@@ -1,80 +1,80 @@
 import { NextRequest, NextResponse } from 'next/server';
-import dbConnect from '@/lib/db';
-import User from '@/models/User';
+import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import prisma from '@/lib/prisma';
 
-export async function POST(req: NextRequest) {
+export async function POST(request: NextRequest) {
   try {
-    await dbConnect();
-
-    const { email, password, name, surname, phone } = await req.json();
+    const { name, email, password, phone } = await request.json();
 
     // Validation
-    if (!email || !password || !name || !surname) {
+    if (!name || !email || !password) {
       return NextResponse.json(
-        { success: false, error: 'Tüm alanları doldurun' },
+        { success: false, message: 'Tüm alanları doldurun' },
         { status: 400 }
       );
     }
 
     // Check if user exists
-    const existingUser = await User.findOne({ email });
+    const existingUser = await prisma.user.findUnique({
+      where: { email },
+    });
+
     if (existingUser) {
       return NextResponse.json(
-        { success: false, error: 'Bu e-posta adresi zaten kayıtlı' },
+        { success: false, message: 'Bu e-posta adresi zaten kullanılıyor' },
         { status: 400 }
       );
     }
 
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 12);
+
     // Create user
-    const user = await User.create({
-      email,
-      password,
-      name,
-      surname,
-      phone,
+    const user = await prisma.user.create({
+      data: {
+        name,
+        email,
+        password: hashedPassword,
+        phone,
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        createdAt: true,
+      },
     });
 
     // Generate JWT
     const token = jwt.sign(
-      { userId: user._id, email: user.email, role: user.role },
-      process.env.NEXTAUTH_SECRET!,
+      { userId: user.id, email: user.email, role: user.role },
+      process.env.JWT_SECRET || 'fallback-secret',
       { expiresIn: '7d' }
     );
 
-    const response = NextResponse.json(
-      {
-        success: true,
-        data: {
-          user: {
-            _id: user._id,
-            email: user.email,
-            name: user.name,
-            surname: user.surname,
-            role: user.role,
-          },
-          token,
-        },
-        message: 'Kayıt başarılı',
-      },
-      { status: 201 }
-    );
-
     // Set cookie
-    response.cookies.set('token', token, {
+    const response = NextResponse.json({
+      success: true,
+      data: user,
+      message: 'Hesabınız başarıyla oluşturuldu',
+    });
+
+    response.cookies.set('auth-token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      sameSite: 'lax',
       maxAge: 60 * 60 * 24 * 7, // 7 days
     });
 
     return response;
-  } catch (error: any) {
+  } catch (error) {
     console.error('Register error:', error);
     return NextResponse.json(
-      { success: false, error: error.message || 'Kayıt sırasında bir hata oluştu' },
+      { success: false, message: 'Kayıt işlemi başarısız oldu' },
       { status: 500 }
     );
   }
 }
-

@@ -1,0 +1,208 @@
+// Prisma Schema for Apeirona E-commerce
+// Using Supabase PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============ USERS ============
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  password      String
+  name          String
+  phone         String?
+  role          UserRole  @default(CUSTOMER)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  addresses     Address[]
+  orders        Order[]
+  
+  @@map("users")
+}
+
+enum UserRole {
+  CUSTOMER
+  ADMIN
+}
+
+// ============ ADDRESSES ============
+model Address {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String   // Ev, İş, vb.
+  fullName    String
+  phone       String
+  city        String
+  district    String
+  neighborhood String
+  address     String
+  zipCode     String?
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  
+  orders      Order[]
+  
+  @@map("addresses")
+}
+
+// ============ CATEGORIES ============
+model Category {
+  id          String    @id @default(cuid())
+  name        String
+  slug        String    @unique
+  description String?
+  image       String?
+  parentId    String?
+  parent      Category? @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children    Category[] @relation("CategoryHierarchy")
+  order       Int       @default(0)
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  products    Product[]
+  
+  @@map("categories")
+}
+
+// ============ PRODUCTS ============
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?
+  price       Float
+  salePrice   Float?
+  sku         String?  @unique
+  stock       Int      @default(0)
+  images      String[] // Array of image URLs
+  categoryId  String?
+  category    Category? @relation(fields: [categoryId], references: [id])
+  tags        String[]
+  isFeatured  Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  orderItems  OrderItem[]
+  
+  @@map("products")
+}
+
+// ============ PLANNER OPTIONS ============
+model PlannerOption {
+  id          String            @id @default(cuid())
+  type        PlannerOptionType
+  name        String
+  description String?
+  image       String?
+  price       Float             @default(0)
+  parentId    String?           // For nested options (e.g., innerDesign depends on notebookType)
+  parent      PlannerOption?    @relation("PlannerOptionHierarchy", fields: [parentId], references: [id])
+  children    PlannerOption[]   @relation("PlannerOptionHierarchy")
+  order       Int               @default(0)
+  isActive    Boolean           @default(true)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  
+  @@map("planner_options")
+}
+
+enum PlannerOptionType {
+  NOTEBOOK_TYPE
+  INNER_DESIGN
+  COVER_MODEL
+  SPIRAL_TYPE
+  SPIRAL_COLOR
+  PACKAGING
+}
+
+// ============ ORDERS ============
+model Order {
+  id              String      @id @default(cuid())
+  orderNumber     String      @unique
+  userId          String?
+  user            User?       @relation(fields: [userId], references: [id])
+  addressId       String?
+  address         Address?    @relation(fields: [addressId], references: [id])
+  
+  // Guest checkout info
+  guestEmail      String?
+  guestName       String?
+  guestPhone      String?
+  shippingAddress Json?       // Full address as JSON for historical record
+  
+  items           OrderItem[]
+  
+  subtotal        Float
+  shippingCost    Float       @default(0)
+  discount        Float       @default(0)
+  total           Float
+  
+  status          OrderStatus @default(PENDING)
+  paymentStatus   PaymentStatus @default(PENDING)
+  paymentMethod   String?
+  paymentId       String?     // iyzico payment ID
+  
+  notes           String?
+  trackingNumber  String?
+  trackingUrl     String?
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  @@map("orders")
+}
+
+model OrderItem {
+  id          String   @id @default(cuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId   String?
+  product     Product? @relation(fields: [productId], references: [id])
+  
+  name        String   // Stored in case product is deleted
+  price       Float
+  quantity    Int
+  
+  isCustom    Boolean  @default(false)
+  customData  Json?    // For custom planner selections
+  
+  @@map("order_items")
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+// ============ SITE SETTINGS ============
+model Setting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     Json
+  updatedAt DateTime @updatedAt
+  
+  @@map("settings")
+}
